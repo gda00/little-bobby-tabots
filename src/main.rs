@@ -1,0 +1,150 @@
+mod commands;
+
+use std::{collections::HashMap, sync::Arc};
+
+use serenity::{
+    all::{
+        Command, CreateCommand, GatewayIntents, Interaction, Ready,
+    },
+    async_trait,
+    client::{Client, Context, EventHandler},
+};
+use songbird::SerenityInit;
+use tokio::sync::RwLock;
+use tracing::{error, info};
+use tracing_subscriber::{fmt, EnvFilter};
+
+use commands::guild_state::GuildMusicState;
+
+/// Shared application data available to all command handlers.
+#[derive(Default)]
+pub struct Data {
+    /// Per-guild music state (queue, current track, etc.)
+    pub music_states: RwLock<HashMap<u64, Arc<RwLock<GuildMusicState>>>>,
+}
+
+impl Data {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// The main event handler for the bot.
+struct Handler;
+
+#[async_trait]
+impl EventHandler for Handler {
+    /// Called once the bot has connected and is ready.
+    async fn ready(&self, ctx: Context, ready: Ready) {
+        info!("Connected as {}", ready.user.name);
+
+        // Register all slash commands globally.
+        // Global commands take up to 1 hour to propagate on Discord.
+        // For faster testing, use guild-specific commands instead.
+        let commands = vec![
+            CreateCommand::new("ping").description("Check if the bot is alive"),
+            CreateCommand::new("play")
+                .description("Play a song or add it to the queue")
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::String,
+                        "query",
+                        "Song name or direct URL (YouTube, SoundCloud, etc.)",
+                    )
+                    .required(true),
+                ),
+            CreateCommand::new("skip").description("Skip the current song"),
+            CreateCommand::new("leave").description("Stop playback and leave the voice channel"),
+            CreateCommand::new("pause").description("Pause the currently playing song"),
+            CreateCommand::new("resume").description("Resume paused playback"),
+            CreateCommand::new("queue").description("Show the current queue"),
+        ];
+
+        if let Ok(guild_id_str) = std::env::var("GUILD_ID") {
+            if let Ok(guild_id_val) = guild_id_str.trim().parse::<u64>() {
+                let guild_id = serenity::all::GuildId::new(guild_id_val);
+                match guild_id.set_commands(&ctx.http, commands).await {
+                    Ok(cmds) => info!("Registered {} guild-specific slash commands for guild {}", cmds.len(), guild_id),
+                    Err(e) => error!("Failed to register guild slash commands: {e}"),
+                }
+                return;
+            }
+        }
+
+        match Command::set_global_commands(&ctx.http, commands).await {
+            Ok(cmds) => info!("Registered {} global slash commands", cmds.len()),
+            Err(e) => error!("Failed to register slash commands: {e}"),
+        }
+    }
+
+    /// Called on every incoming interaction (slash commands, buttons, etc.)
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        let Interaction::Command(command) = interaction else {
+            return;
+        };
+
+        let data = ctx
+            .data
+            .read()
+            .await
+            .get::<commands::DataKey>()
+            .cloned()
+            .expect("Data should always be present");
+
+        let result = match command.data.name.as_str() {
+            "ping"  => commands::ping::run(&ctx, &command).await,
+            "play"  => commands::play::run(&ctx, &command, &data).await,
+            "skip"  => commands::skip::run(&ctx, &command, &data).await,
+            "leave" => commands::leave::run(&ctx, &command, &data).await,
+            "pause" => commands::pause::run(&ctx, &command, &data).await,
+            "resume"=> commands::resume::run(&ctx, &command, &data).await,
+            "queue" => commands::queue::run(&ctx, &command, &data).await,
+            other   => {
+                error!("Unknown command: {other}");
+                Ok(())
+            }
+        };
+
+        if let Err(e) = result {
+            error!("Error handling command '{}': {e}", command.data.name);
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    // Load a .env file if present (convenient for local dev).
+    // Does nothing if the file doesn't exist.
+    let _ = dotenvy::dotenv();
+
+    // Initialise structured logging. Set RUST_LOG env var to control level.
+    // e.g. RUST_LOG=little_bobby_tabots=debug,songbird=info
+    fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    let token = std::env::var("DISCORD_TOKEN")
+        .expect("DISCORD_TOKEN must be set (in environment or .env file)");
+
+    // Minimal intents: guild messages for voice state lookups, guild voice states
+    // for knowing which channel the user is in.
+    let intents = GatewayIntents::non_privileged() | GatewayIntents::GUILD_VOICE_STATES;
+
+    let shared_data = Arc::new(Data::new());
+
+    let mut client = Client::builder(&token, intents)
+        .event_handler(Handler)
+        .register_songbird()
+        .type_map_insert::<commands::DataKey>(Arc::clone(&shared_data))
+        .await
+        .expect("Failed to create serenity client");
+
+    info!("Starting Bobby TaBot…");
+
+    if let Err(e) = client.start().await {
+        error!("Client error: {e}");
+    }
+}

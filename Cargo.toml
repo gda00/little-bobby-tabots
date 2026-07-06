@@ -1,0 +1,48 @@
+[package]
+name = "little-bobby-tabots"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "little-bobby-tabots"
+path = "src/main.rs"
+
+[dependencies]
+# Discord gateway + slash commands
+serenity = { version = "0.12", default-features = false, features = [
+    "client",
+    "gateway",
+    "native_tls_backend",
+    "cache",
+] }
+
+songbird = { version = "0.6.0", default-features = false, features = [
+    "serenity",
+    "native",
+    "driver",
+    "builtin-queue",
+    "gateway",
+    "tungstenite",
+] }
+
+# Async runtime (required by both serenity and songbird)
+tokio = { version = "1", features = ["full"] }
+
+# Structured logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Load DISCORD_TOKEN from a .env file during local development
+dotenvy = "0.15"
+
+# HTTP client — must match songbird's internal reqwest version (0.12)
+reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
+
+# Audio formats decoder (required by songbird 0.6.0 to enable format readers/decoders)
+symphonia = { version = "0.5.2", features = ["all"] }
+
+[patch.crates-io]
+hpke-rs-libcrux = { git = "https://github.com/cryspen/hpke-rs.git" }
+libcrux-chacha20poly1305 = { git = "https://github.com/cryspen/libcrux.git" }
+libcrux-aead = { git = "https://github.com/cryspen/libcrux.git" }
+

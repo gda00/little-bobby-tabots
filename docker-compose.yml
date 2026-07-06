@@ -1,0 +1,7 @@
+services:
+  bot:
+    build: .
+    container_name: little-bobby-tabots
+    restart: unless-stopped
+    env_file:
+      - .env

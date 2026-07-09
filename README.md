@@ -4,7 +4,7 @@
 [![Docker](https://img.shields.io/badge/Container-Docker%20Compose-blue.svg)](https://www.docker.com/)
 [![Security Audit](https://img.shields.io/badge/Security-100%25%20Vulnerability%20Free-success.svg)](https://rustsec.org/)
 
-**Little Bobby TaBots** is a highly optimized, lightweight, self-hosted Discord music bot written in Rust. It is designed to run locally or inside a Docker container with minimal memory and CPU footprints. 
+**Little Bobby TaBots** is a highly optimized, lightweight, self-hosted Discord music bot written in Rust. It is designed to run locally or inside a Docker container with minimal memory and CPU footprints.
 
 *Name origin: A nod to the classic XKCD "Robert'); DROP TABLE Students;--" comic.*
 
@@ -24,7 +24,7 @@
 
 | Command | Description |
 | :--- | :--- |
-| `/play <query>` | Connects to your voice channel and plays/queues a song (searches YouTube/SoundCloud or accepts direct URLs). An explicit YouTube `/playlist?list=...` URL queues every resolvable video in playlist order. |
+| `/play <query>` | Connects to your voice channel and plays/queues a song (searches YouTube/SoundCloud or accepts direct URLs). An explicit YouTube `/playlist?list=...` URL queues resolvable videos in playlist order. |
 | `/pause` | Pauses playback of the current track. |
 | `/resume` | Resumes playing the paused track. |
 | `/skip` | Skips the current track and starts the next one in the queue. |
@@ -41,7 +41,7 @@
 2. Create a new Application called **Little Bobby TaBots** (or your preferred name).
 3. Under the **Bot** tab, create a bot user and copy the **Token**.
 4. Scroll down under the **Bot** tab and ensure **Guild Voice States** intent is enabled under **Privileged Gateway Intents**.
-5. Under the **Installation** tab, set scopes to `bot` and `applications.commands`. Under permissions, grant `Connect`, `Speak`, and `Send Messages`. 
+5. Under the **Installation** tab, set scopes to `bot` and `applications.commands`. Under permissions, grant `Connect`, `Speak`, and `Send Messages`.
 6. Use the generated link to invite the bot to your Discord server.
 
 ### 2. Configuration

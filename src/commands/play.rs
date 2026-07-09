@@ -93,11 +93,8 @@ pub async fn run(
         }
     };
 
-    let state_arc = data.music_state(guild_id.get()).await;
-    let mut state = state_arc.write().await;
-
-    // Hold both the per-guild mutation lock and state lock while adding this
-    // ordered batch, so the displayed queue cannot diverge from Songbird.
+    // The mutation lock keeps this batch ordered without holding the state
+    // write lock while Songbird creates every source.
     let was_idle = {
         let mut handler = handler_lock.lock().await;
         let was_idle = handler.queue().is_empty();
@@ -121,6 +118,8 @@ pub async fn run(
         was_idle
     };
 
+    let state_arc = data.music_state(guild_id.get()).await;
+    let mut state = state_arc.write().await;
     state.enqueue_batch(request.tracks.clone(), was_idle);
     drop(state);
     drop(_operation_guard);

@@ -60,7 +60,7 @@ impl EventHandler for Handler {
         let commands = vec![
             CreateCommand::new("ping").description("Check if the bot is alive"),
             CreateCommand::new("play")
-                .description("Play a song or queue all videos from a YouTube playlist")
+                .description("Play a song or queue videos from YouTube playlist")
                 .add_option(
                     serenity::all::CreateCommandOption::new(
                         serenity::all::CommandOptionType::String,

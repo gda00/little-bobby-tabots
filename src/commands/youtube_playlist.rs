@@ -4,6 +4,9 @@ use serde::Deserialize;
 use tokio::process::Command;
 use url::Url;
 
+/// Maximum number of videos a single playlist request may enqueue.
+pub const MAX_PLAYLIST_TRACKS: usize = 100;
+
 /// A YouTube playlist and its playable video entries, in source order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YoutubePlaylist {
@@ -72,6 +75,8 @@ pub async fn resolve(url: &str) -> Result<YoutubePlaylist, PlaylistResolveError>
             "--flat-playlist",
             "--dump-single-json",
             "--no-warnings",
+            "--playlist-end",
+            &MAX_PLAYLIST_TRACKS.to_string(),
             "--",
             url,
         ])
@@ -133,6 +138,7 @@ fn parse_flat_playlist(output: &[u8]) -> Result<YoutubePlaylist, PlaylistResolve
                 url: format!("https://www.youtube.com/watch?v={id}"),
             })
         })
+        .take(MAX_PLAYLIST_TRACKS)
         .collect::<Vec<_>>();
 
     if tracks.is_empty() {
@@ -150,7 +156,9 @@ fn parse_flat_playlist(output: &[u8]) -> Result<YoutubePlaylist, PlaylistResolve
 
 #[cfg(test)]
 mod tests {
-    use super::{is_youtube_playlist_url, parse_flat_playlist, PlaylistResolveError};
+    use super::{
+        is_youtube_playlist_url, parse_flat_playlist, PlaylistResolveError, MAX_PLAYLIST_TRACKS,
+    };
 
     #[test]
     fn recognizes_only_explicit_youtube_playlist_urls() {
@@ -206,5 +214,21 @@ mod tests {
             .expect_err("playlist should be empty");
 
         assert!(matches!(error, PlaylistResolveError::Empty));
+    }
+
+    #[test]
+    fn limits_playlists_to_one_hundred_tracks() {
+        let entries = (0..=MAX_PLAYLIST_TRACKS)
+            .map(|index| format!(r#"{{"id":"video-{index}","title":"Video {index}"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let playlist = parse_flat_playlist(format!(r#"{{"entries":[{entries}]}}"#).as_bytes())
+            .expect("playlist should parse");
+
+        assert_eq!(playlist.tracks.len(), MAX_PLAYLIST_TRACKS);
+        assert_eq!(
+            playlist.tracks.last().map(|track| track.title.as_str()),
+            Some("Video 99")
+        );
     }
 }

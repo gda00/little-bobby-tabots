@@ -13,7 +13,7 @@ use crate::Data;
 pub async fn run(
     ctx: &Context,
     command: &CommandInteraction,
-    _data: &Arc<Data>,
+    data: &Arc<Data>,
 ) -> Result<(), serenity::Error> {
     let guild_id = match command.guild_id {
         Some(id) => id,
@@ -21,6 +21,9 @@ pub async fn run(
             return reply(ctx, command, "❌ This command can only be used in a server.", true).await;
         }
     };
+
+    let operation_lock = data.music_operation_lock(guild_id.get()).await;
+    let _operation_guard = operation_lock.lock().await;
 
     let songbird = songbird::get(ctx)
         .await

@@ -1,11 +1,12 @@
 pub mod guild_state;
+pub mod leave;
+pub mod pause;
 pub mod ping;
 pub mod play;
-pub mod skip;
-pub mod leave;
 pub mod queue;
-pub mod pause;
 pub mod resume;
+pub mod skip;
+pub mod youtube_playlist;
 
 use std::sync::Arc;
 

@@ -14,59 +14,76 @@ use songbird::{
 use tracing::{error, info};
 
 use crate::{
-    commands::guild_state::{GuildMusicState, Track},
+    commands::{guild_state::Track, youtube_playlist},
     Data,
 };
 
-/// /play {query} — join the user's voice channel and play or queue a track.
+/// /play {query} — join the user's voice channel and play or queue tracks.
 pub async fn run(
     ctx: &Context,
     command: &CommandInteraction,
     data: &Arc<Data>,
 ) -> Result<(), serenity::Error> {
-    // ── 1. Extract the query option ───────────────────────────────────────────
     let query = match command.data.options().first() {
         Some(opt) => match &opt.value {
-            ResolvedValue::String(s) => s.to_string(),
+            ResolvedValue::String(value) => value.to_string(),
             _ => return reply_ephemeral(ctx, command, "❌ Expected a text query.").await,
         },
-        None => return reply_ephemeral(ctx, command, "❌ Please provide a song name or URL.").await,
+        None => {
+            return reply_ephemeral(ctx, command, "❌ Please provide a song name or URL.").await
+        }
     };
 
-    // ── 2. Check guild ────────────────────────────────────────────────────────
     let guild_id = match command.guild_id {
         Some(id) => id,
-        None => return reply_ephemeral(ctx, command, "❌ This command can only be used in a server.").await,
+        None => {
+            return reply_ephemeral(
+                ctx,
+                command,
+                "❌ This command can only be used in a server.",
+            )
+            .await
+        }
     };
 
-    // ── 3. Find the user's voice channel ─────────────────────────────────────
-    // We extract only the ChannelId here and let the CacheRef drop immediately
-    // before any .await, because CacheRef is not Send.
-    let channel_id: Option<serenity::all::ChannelId> = {
-        ctx.cache
-            .guild(guild_id)
-            .and_then(|g| {
-                g.voice_states
-                    .get(&command.user.id)
-                    .and_then(|vs| vs.channel_id)
-            })
+    // Extract the ChannelId and drop CacheRef before awaiting.
+    let channel_id = {
+        ctx.cache.guild(guild_id).and_then(|guild| {
+            guild
+                .voice_states
+                .get(&command.user.id)
+                .and_then(|state| state.channel_id)
+        })
     };
 
     let channel_id = match channel_id {
         Some(id) => id,
-        None => return reply_ephemeral(ctx, command, "❌ You need to be in a voice channel first.").await,
+        None => {
+            return reply_ephemeral(ctx, command, "❌ You need to be in a voice channel first.")
+                .await
+        }
     };
 
-    // Defer now — yt-dlp metadata lookup can take a few seconds.
+    // Playlist expansion and normal metadata lookup can take a few seconds.
     command.defer(&ctx.http).await?;
 
-    // ── 4. Join the voice channel (or reuse existing connection) ──────────────
-    let songbird = songbird::get(ctx).await.expect("Songbird must be registered");
+    let request = match resolve_request(&query, command.user.id).await {
+        Ok(request) => request,
+        Err(message) => return edit_reply(ctx, command, &message).await,
+    };
 
+    // Playback-changing operations must remain ordered across /play, track-end
+    // events, and /leave. Resolve external metadata before entering this section.
+    let operation_lock = data.music_operation_lock(guild_id.get()).await;
+    let _operation_guard = operation_lock.lock().await;
+
+    let songbird = songbird::get(ctx)
+        .await
+        .expect("Songbird must be registered");
     let handler_lock = match songbird.join(guild_id, channel_id).await {
-        Ok(h) => h,
-        Err(e) => {
-            error!("Failed to join voice channel: {e}");
+        Ok(handler) => handler,
+        Err(error) => {
+            error!("Failed to join voice channel: {error}");
             return edit_reply(
                 ctx,
                 command,
@@ -76,104 +93,169 @@ pub async fn run(
         }
     };
 
-    // ── 5. Build yt-dlp source ────────────────────────────────────────────────
-    // If input is a URL, pass directly. Otherwise prefix with ytsearch1: for YouTube search.
-    let source_url = if is_url(&query) {
-        query.clone()
+    let state_arc = data.music_state(guild_id.get()).await;
+    let mut state = state_arc.write().await;
+
+    // Hold both the per-guild mutation lock and state lock while adding this
+    // ordered batch, so the displayed queue cannot diverge from Songbird.
+    let was_idle = {
+        let mut handler = handler_lock.lock().await;
+        let was_idle = handler.queue().is_empty();
+        let client = reqwest::Client::new();
+
+        for track in &request.tracks {
+            let source = YoutubeDl::new(client.clone(), track.url.clone());
+            let track_handle = handler.enqueue(source.into()).await;
+            let _ = track_handle.add_event(
+                Event::Track(TrackEvent::End),
+                TrackEndHandler {
+                    guild_id: guild_id.get(),
+                    data: Arc::clone(data),
+                    track: track.clone(),
+                },
+            );
+        }
+
+        was_idle
+    };
+
+    state.enqueue_batch(request.tracks.clone(), was_idle);
+    drop(state);
+    drop(_operation_guard);
+
+    reply_for_request(ctx, command, &request, was_idle).await
+}
+
+struct ResolvedPlayRequest {
+    tracks: Vec<Track>,
+    playlist_title: Option<String>,
+}
+
+async fn resolve_request(
+    query: &str,
+    requested_by: serenity::all::UserId,
+) -> Result<ResolvedPlayRequest, String> {
+    if youtube_playlist::is_youtube_playlist_url(query) {
+        let playlist = youtube_playlist::resolve(query).await.map_err(|error| {
+            error!("yt-dlp playlist lookup failed for '{query}': {error}");
+            "❌ Could not load that YouTube playlist. It may be private, unavailable, or empty."
+                .to_string()
+        })?;
+
+        let tracks = playlist
+            .tracks
+            .into_iter()
+            .map(|track| Track {
+                title: track.title,
+                url: track.url,
+                requested_by,
+            })
+            .collect();
+
+        return Ok(ResolvedPlayRequest {
+            tracks,
+            playlist_title: Some(playlist.title),
+        });
+    }
+
+    // URLs are sent to yt-dlp as-is; search text resolves to one YouTube result.
+    let source_url = if is_url(query) {
+        query.to_string()
     } else {
         format!("ytsearch1:{query}")
     };
-
     let mut source = YoutubeDl::new(reqwest::Client::new(), source_url.clone());
-
-    // ── 6. Fetch track metadata (title) ───────────────────────────────────────
-    let metadata = match source.aux_metadata().await {
-        Ok(m) => m,
-        Err(e) => {
-            error!("yt-dlp metadata fetch failed for '{query}': {e}");
-            return edit_reply(
-                ctx,
-                command,
-                &format!(
-                    "❌ Could not find `{query}`. The link may be private, geo-blocked, or invalid."
-                ),
-            )
-            .await;
-        }
-    };
-
-    let title = metadata.title.clone().unwrap_or_else(|| query.clone());
+    let metadata = source.aux_metadata().await.map_err(|error| {
+        error!("yt-dlp metadata fetch failed for '{query}': {error}");
+        format!("❌ Could not find `{query}`. The link may be private, geo-blocked, or invalid.")
+    })?;
+    let title = metadata.title.unwrap_or_else(|| query.to_string());
     info!("Resolved track: {title}");
 
-    // ── 7. Check whether the queue is currently empty ─────────────────────────
-    let was_empty = {
-        let handler = handler_lock.lock().await;
-        handler.queue().is_empty()
-    };
-
-    // ── 8. Enqueue via songbird's built-in queue ──────────────────────────────
-    // enqueue_source starts playback immediately if idle, or appends otherwise.
-    let track_handle = {
-        let mut handler = handler_lock.lock().await;
-        handler.enqueue(source.into()).await
-    };
-
-    let _ = track_handle.add_event(
-        Event::Track(TrackEvent::End),
-        TrackEndHandler {
-            guild_id: guild_id.get(),
-            data: Arc::clone(data),
-        },
-    );
-
-    // ── 9. Update our internal guild state ────────────────────────────────────
-    {
-        let mut states = data.music_states.write().await;
-        let state_arc = states
-            .entry(guild_id.get())
-            .or_insert_with(|| Arc::new(tokio::sync::RwLock::new(GuildMusicState::new())))
-            .clone();
-
-        let mut state = state_arc.write().await;
-        let track = Track {
-            title: title.clone(),
+    Ok(ResolvedPlayRequest {
+        tracks: vec![Track {
+            title,
             url: source_url,
-            requested_by: command.user.id,
-        };
+            requested_by,
+        }],
+        playlist_title: None,
+    })
+}
 
-        if was_empty {
-            state.current = Some(track);
-        } else {
-            state.enqueue(track);
+async fn reply_for_request(
+    ctx: &Context,
+    command: &CommandInteraction,
+    request: &ResolvedPlayRequest,
+    was_idle: bool,
+) -> Result<(), serenity::Error> {
+    let first_track = request
+        .tracks
+        .first()
+        .expect("resolved playback requests must contain a track");
+
+    match (&request.playlist_title, was_idle) {
+        (Some(playlist_title), true) => {
+            edit_reply_embed(
+                ctx,
+                command,
+                "🎵 Now Playing",
+                &format!(
+                    "**{}**\nPlaylist: **{}**\n{} more track(s) queued\nRequested by <@{}>",
+                    first_track.title,
+                    playlist_title,
+                    request.tracks.len().saturating_sub(1),
+                    command.user.id,
+                ),
+                0x57F287,
+            )
+            .await
         }
-    }
-
-    // ── 10. Reply ─────────────────────────────────────────────────────────────
-    if was_empty {
-        edit_reply_embed(
-            ctx,
-            command,
-            "🎵 Now Playing",
-            &format!("**{title}**\nRequested by <@{}>", command.user.id),
-            0x57F287, // green
-        )
-        .await
-    } else {
-        edit_reply_embed(
-            ctx,
-            command,
-            "➕ Added to Queue",
-            &format!("**{title}**\nRequested by <@{}>", command.user.id),
-            0x5865F2, // blurple
-        )
-        .await
+        (Some(playlist_title), false) => {
+            edit_reply_embed(
+                ctx,
+                command,
+                "➕ Playlist Added to Queue",
+                &format!(
+                    "**{}**\n{} track(s) added\nRequested by <@{}>",
+                    playlist_title,
+                    request.tracks.len(),
+                    command.user.id,
+                ),
+                0x5865F2,
+            )
+            .await
+        }
+        (None, true) => {
+            edit_reply_embed(
+                ctx,
+                command,
+                "🎵 Now Playing",
+                &format!(
+                    "**{}**\nRequested by <@{}>",
+                    first_track.title, command.user.id
+                ),
+                0x57F287,
+            )
+            .await
+        }
+        (None, false) => {
+            edit_reply_embed(
+                ctx,
+                command,
+                "➕ Added to Queue",
+                &format!(
+                    "**{}**\nRequested by <@{}>",
+                    first_track.title, command.user.id
+                ),
+                0x5865F2,
+            )
+            .await
+        }
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn is_url(s: &str) -> bool {
-    s.starts_with("http://") || s.starts_with("https://")
+fn is_url(input: &str) -> bool {
+    input.starts_with("http://") || input.starts_with("https://")
 }
 
 async fn reply_ephemeral(
@@ -232,16 +314,26 @@ async fn edit_reply_embed(
 struct TrackEndHandler {
     guild_id: u64,
     data: Arc<Data>,
+    track: Track,
 }
 
 #[serenity::async_trait]
 impl SongbirdEventHandler for TrackEndHandler {
     async fn act(&self, _ctx: &EventContext<'_>) -> Option<Event> {
-        let states = self.data.music_states.read().await;
-        if let Some(state_arc) = states.get(&self.guild_id) {
+        let operation_lock = self.data.music_operation_lock(self.guild_id).await;
+        let _operation_guard = operation_lock.lock().await;
+        let state_arc = {
+            let states = self.data.music_states.read().await;
+            states.get(&self.guild_id).cloned()
+        };
+
+        if let Some(state_arc) = state_arc {
             let mut state = state_arc.write().await;
-            state.advance();
+            if state.current.as_ref() == Some(&self.track) {
+                state.advance();
+            }
         }
+
         Some(Event::Cancel)
     }
 }

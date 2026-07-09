@@ -24,7 +24,7 @@
 
 | Command | Description |
 | :--- | :--- |
-| `/play <query>` | Connects to your voice channel and plays/queues a song (searches YouTube/SoundCloud or accepts direct URLs). |
+| `/play <query>` | Connects to your voice channel and plays/queues a song (searches YouTube/SoundCloud or accepts direct URLs). An explicit YouTube `/playlist?list=...` URL queues every resolvable video in playlist order. |
 | `/pause` | Pauses playback of the current track. |
 | `/resume` | Resumes playing the paused track. |
 | `/skip` | Skips the current track and starts the next one in the queue. |

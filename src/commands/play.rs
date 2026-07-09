@@ -106,14 +106,16 @@ pub async fn run(
         for track in &request.tracks {
             let source = YoutubeDl::new(client.clone(), track.url.clone());
             let track_handle = handler.enqueue(source.into()).await;
-            let _ = track_handle.add_event(
+            if let Err(error) = track_handle.add_event(
                 Event::Track(TrackEvent::End),
                 TrackEndHandler {
                     guild_id: guild_id.get(),
                     data: Arc::clone(data),
                     track: track.clone(),
                 },
-            );
+            ) {
+                error!("Failed to register track end handler: {error}");
+            }
         }
 
         was_idle

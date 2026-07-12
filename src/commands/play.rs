@@ -84,6 +84,7 @@ pub async fn run(
         Ok(handler) => handler,
         Err(error) => {
             error!("Failed to join voice channel: {error}");
+            drop(_operation_guard);
             return edit_reply(
                 ctx,
                 command,

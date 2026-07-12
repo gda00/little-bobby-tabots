@@ -174,10 +174,16 @@ async fn resolve_request(
     let title = metadata.title.unwrap_or_else(|| query.to_string());
     info!("Resolved track: {title}");
 
+    let resolved_url = metadata
+        .source_url
+        .clone()
+        .filter(|url| !url.is_empty())
+        .unwrap_or(source_url);
+
     Ok(ResolvedPlayRequest {
         tracks: vec![Track {
             title,
-            url: source_url,
+            url: resolved_url,
             requested_by,
         }],
         playlist_title: None,
@@ -331,9 +337,7 @@ impl SongbirdEventHandler for TrackEndHandler {
 
         if let Some(state_arc) = state_arc {
             let mut state = state_arc.write().await;
-            if state.current.as_ref() == Some(&self.track) {
-                state.advance();
-            }
+            state.advance();
         }
 
         Some(Event::Cancel)

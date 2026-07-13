@@ -41,6 +41,11 @@ reqwest = { version = "0.12", default-features = false, features = ["native-tls"
 # Audio formats decoder (required by songbird 0.6.0 to enable format readers/decoders)
 symphonia = { version = "0.5.2", features = ["all"] }
 
+# Playlist metadata parsing and URL validation.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+
 [patch.crates-io]
 hpke-rs-libcrux = { git = "https://github.com/cryspen/hpke-rs.git" }
 libcrux-chacha20poly1305 = { git = "https://github.com/cryspen/libcrux.git" }

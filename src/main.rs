@@ -3,14 +3,12 @@ mod commands;
 use std::{collections::HashMap, sync::Arc};
 
 use serenity::{
-    all::{
-        Command, CreateCommand, GatewayIntents, Interaction, Ready,
-    },
+    all::{Command, CreateCommand, GatewayIntents, Interaction, Ready},
     async_trait,
     client::{Client, Context, EventHandler},
 };
 use songbird::SerenityInit;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{error, info};
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -21,11 +19,29 @@ use commands::guild_state::GuildMusicState;
 pub struct Data {
     /// Per-guild music state (queue, current track, etc.)
     pub music_states: RwLock<HashMap<u64, Arc<RwLock<GuildMusicState>>>>,
+    /// Serializes playback mutations so Songbird and displayed queue state stay ordered.
+    pub music_operation_locks: Mutex<HashMap<u64, Arc<Mutex<()>>>>,
 }
 
 impl Data {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub async fn music_state(&self, guild_id: u64) -> Arc<RwLock<GuildMusicState>> {
+        let mut states = self.music_states.write().await;
+        states
+            .entry(guild_id)
+            .or_insert_with(|| Arc::new(RwLock::new(GuildMusicState::new())))
+            .clone()
+    }
+
+    pub async fn music_operation_lock(&self, guild_id: u64) -> Arc<Mutex<()>> {
+        let mut locks = self.music_operation_locks.lock().await;
+        locks
+            .entry(guild_id)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 }
 
@@ -44,12 +60,12 @@ impl EventHandler for Handler {
         let commands = vec![
             CreateCommand::new("ping").description("Check if the bot is alive"),
             CreateCommand::new("play")
-                .description("Play a song or add it to the queue")
+                .description("Play a song or queue videos from YouTube playlist")
                 .add_option(
                     serenity::all::CreateCommandOption::new(
                         serenity::all::CommandOptionType::String,
                         "query",
-                        "Song name or direct URL (YouTube, SoundCloud, etc.)",
+                        "Song name, direct URL, or explicit YouTube playlist URL",
                     )
                     .required(true),
                 ),
@@ -64,7 +80,11 @@ impl EventHandler for Handler {
             if let Ok(guild_id_val) = guild_id_str.trim().parse::<u64>() {
                 let guild_id = serenity::all::GuildId::new(guild_id_val);
                 match guild_id.set_commands(&ctx.http, commands).await {
-                    Ok(cmds) => info!("Registered {} guild-specific slash commands for guild {}", cmds.len(), guild_id),
+                    Ok(cmds) => info!(
+                        "Registered {} guild-specific slash commands for guild {}",
+                        cmds.len(),
+                        guild_id
+                    ),
                     Err(e) => error!("Failed to register guild slash commands: {e}"),
                 }
                 return;
@@ -92,14 +112,14 @@ impl EventHandler for Handler {
             .expect("Data should always be present");
 
         let result = match command.data.name.as_str() {
-            "ping"  => commands::ping::run(&ctx, &command).await,
-            "play"  => commands::play::run(&ctx, &command, &data).await,
-            "skip"  => commands::skip::run(&ctx, &command, &data).await,
+            "ping" => commands::ping::run(&ctx, &command).await,
+            "play" => commands::play::run(&ctx, &command, &data).await,
+            "skip" => commands::skip::run(&ctx, &command, &data).await,
             "leave" => commands::leave::run(&ctx, &command, &data).await,
             "pause" => commands::pause::run(&ctx, &command, &data).await,
-            "resume"=> commands::resume::run(&ctx, &command, &data).await,
+            "resume" => commands::resume::run(&ctx, &command, &data).await,
             "queue" => commands::queue::run(&ctx, &command, &data).await,
-            other   => {
+            other => {
                 error!("Unknown command: {other}");
                 Ok(())
             }
@@ -121,8 +141,7 @@ async fn main() {
     // e.g. RUST_LOG=little_bobby_tabots=debug,songbird=info
     fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 

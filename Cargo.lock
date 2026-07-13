@@ -1898,12 +1898,15 @@ version = "0.1.0"
 dependencies = [
  "dotenvy",
  "reqwest 0.12.28",
+ "serde",
+ "serde_json",
  "serenity",
  "songbird",
  "symphonia",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

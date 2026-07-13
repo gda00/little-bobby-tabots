@@ -109,7 +109,6 @@ pub async fn run(
                 TrackEndHandler {
                     guild_id: guild_id.get(),
                     data: Arc::clone(data),
-                    track: track.clone(),
                 },
             ) {
                 error!("Failed to register track end handler: {error}");
@@ -322,7 +321,6 @@ async fn edit_reply_embed(
 struct TrackEndHandler {
     guild_id: u64,
     data: Arc<Data>,
-    track: Track,
 }
 
 #[serenity::async_trait]

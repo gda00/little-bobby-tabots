@@ -98,14 +98,17 @@ pub async fn run(
 
     // The mutation lock keeps this batch ordered without holding the state
     // write lock while Songbird creates every source.
-    let was_idle = {
+    let (was_idle, queued_tracks) = {
         let mut handler = handler_lock.lock().await;
         let was_idle = handler.queue().is_empty();
         let client = reqwest::Client::new();
+        let mut queued_tracks = request.tracks.clone();
 
-        for track in &request.tracks {
+        for track in &mut queued_tracks {
             let source = YoutubeDl::new(client.clone(), track.url.clone());
             let mut songbird_track = SongbirdTrack::new(source.into());
+            let playback_id = songbird_track.uuid.to_string();
+            track.playback_id = Some(playback_id.clone());
             songbird_track.events.add_event(
                 EventData::new(
                     Event::Track(TrackEvent::End),
@@ -113,6 +116,7 @@ pub async fn run(
                         guild_id: guild_id.get(),
                         data: Arc::clone(data),
                         songbird: Arc::clone(&songbird),
+                        playback_id,
                     },
                 ),
                 Duration::ZERO,
@@ -120,12 +124,12 @@ pub async fn run(
             handler.enqueue(songbird_track).await;
         }
 
-        was_idle
+        (was_idle, queued_tracks)
     };
 
     let state_arc = data.music_state(guild_id.get()).await;
     let mut state = state_arc.write().await;
-    state.enqueue_batch(request.tracks.clone(), was_idle);
+    state.enqueue_batch(queued_tracks, was_idle);
     drop(state);
     drop(_operation_guard);
 
@@ -155,6 +159,7 @@ async fn resolve_request(
                 title: track.title,
                 url: track.url,
                 requested_by,
+                playback_id: None,
             })
             .collect();
 
@@ -189,6 +194,7 @@ async fn resolve_request(
             title,
             url: resolved_url,
             requested_by,
+            playback_id: None,
         }],
         playlist_title: None,
     })
@@ -327,6 +333,7 @@ struct MusicTrackEndHandler {
     guild_id: u64,
     data: Arc<Data>,
     songbird: Arc<songbird::Songbird>,
+    playback_id: String,
 }
 
 #[serenity::async_trait]
@@ -342,6 +349,12 @@ impl SongbirdEventHandler for MusicTrackEndHandler {
         if let Some(state_arc) = &state_arc {
             let (preplay_url, has_next_music) = {
                 let state = state_arc.read().await;
+                // Removing a queued Songbird track fires its End event. Ignore
+                // those events unless this playback instance is the current song.
+                if !state.is_current_playback(&self.playback_id) {
+                    return Some(Event::Cancel);
+                }
+
                 (state.preplay_url.clone(), !state.queue.is_empty())
             };
             let roll = rand::rng().random_range(0..100);

@@ -346,6 +346,8 @@ impl SongbirdEventHandler for MusicTrackEndHandler {
             };
             let roll = rand::rng().random_range(0..100);
 
+            let mut preplay_inserted = false;
+
             if let Some(preplay_url) = preplay_url {
                 if has_next_music {
                     let guild_id = serenity::all::GuildId::new(self.guild_id);
@@ -373,6 +375,16 @@ impl SongbirdEventHandler for MusicTrackEndHandler {
                                 ),
                                 Duration::ZERO,
                             );
+                            preplay_track.events.add_event(
+                                EventData::new(
+                                    Event::Track(TrackEvent::End),
+                                    PrePlayEndHandler {
+                                        guild_id: self.guild_id,
+                                        data: Arc::clone(&self.data),
+                                    },
+                                ),
+                                Duration::ZERO,
+                            );
                             let preplay_handle = handler.enqueue_with_preload(preplay_track, None);
                             let preplay_id = preplay_handle.uuid();
                             let inserted = handler.queue().modify_queue(|queue| {
@@ -382,6 +394,7 @@ impl SongbirdEventHandler for MusicTrackEndHandler {
                             });
 
                             if inserted {
+                                preplay_inserted = true;
                                 info!(
                                     guild_id = self.guild_id,
                                     chance_percent = self.data.preplay_config.chance_percent,
@@ -400,7 +413,33 @@ impl SongbirdEventHandler for MusicTrackEndHandler {
             }
 
             let mut state = state_arc.write().await;
-            state.advance();
+            if !preplay_inserted || !state.begin_preplay() {
+                state.advance();
+            }
+        }
+
+        Some(Event::Cancel)
+    }
+}
+
+struct PrePlayEndHandler {
+    guild_id: u64,
+    data: Arc<Data>,
+}
+
+#[serenity::async_trait]
+impl SongbirdEventHandler for PrePlayEndHandler {
+    async fn act(&self, _ctx: &EventContext<'_>) -> Option<Event> {
+        let operation_lock = self.data.music_operation_lock(self.guild_id).await;
+        let _operation_guard = operation_lock.lock().await;
+        let state_arc = {
+            let states = self.data.music_states.read().await;
+            states.get(&self.guild_id).cloned()
+        };
+
+        if let Some(state_arc) = state_arc {
+            let mut state = state_arc.write().await;
+            state.finish_preplay();
         }
 
         Some(Event::Cancel)

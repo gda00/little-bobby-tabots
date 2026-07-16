@@ -33,6 +33,12 @@ struct CachedOccupancy {
     unknown_members: Vec<UserId>,
 }
 
+impl CachedOccupancy {
+    fn is_occupied(&self) -> bool {
+        self.human_present || !self.unknown_members.is_empty()
+    }
+}
+
 /// Re-evaluate whether a guild needs an empty-channel timer.
 pub(crate) async fn refresh(ctx: &Context, data: &Arc<Data>, guild_id: GuildId) {
     let Some(channel_id) = bot_voice_channel(ctx, guild_id) else {
@@ -45,7 +51,7 @@ pub(crate) async fn refresh(ctx: &Context, data: &Arc<Data>, guild_id: GuildId) 
         return;
     }
 
-    if channel_has_human_listener(ctx, guild_id, channel_id).await {
+    if channel_has_human_listener(ctx, guild_id, channel_id) {
         cancel(data, guild_id).await;
         return;
     }
@@ -125,7 +131,7 @@ async fn run_timer(ctx: Context, data: Arc<Data>, guild_id: GuildId, identity: T
     let songbird_connected = current_channel == Some(identity.channel_id)
         && songbird_is_connected_to(&ctx, guild_id, identity.channel_id).await;
     let human_present = if songbird_connected {
-        channel_has_human_listener(&ctx, guild_id, identity.channel_id).await
+        channel_has_human_listener(&ctx, guild_id, identity.channel_id)
     } else {
         true
     };
@@ -182,11 +188,7 @@ async fn songbird_is_connected_to(ctx: &Context, guild_id: GuildId, channel_id: 
     handler.current_channel() == Some(channel_id.into())
 }
 
-async fn channel_has_human_listener(
-    ctx: &Context,
-    guild_id: GuildId,
-    channel_id: ChannelId,
-) -> bool {
+fn channel_has_human_listener(ctx: &Context, guild_id: GuildId, channel_id: ChannelId) -> bool {
     let bot_user_id = ctx.cache.current_user().id;
     let occupancy = {
         let Some(guild) = ctx.cache.guild(guild_id) else {
@@ -212,26 +214,9 @@ async fn channel_has_human_listener(
         )
     };
 
-    if occupancy.human_present {
-        return true;
-    }
-
-    for user_id in occupancy.unknown_members {
-        match guild_id.member(&ctx.http, user_id).await {
-            Ok(member) if !member.user.bot => return true,
-            Ok(_) => {}
-            Err(error) => {
-                warn!(
-                    guild_id = guild_id.get(),
-                    user_id = user_id.get(),
-                    "Could not identify voice channel member; treating channel as occupied: {error}"
-                );
-                return true;
-            }
-        }
-    }
-
-    false
+    // Unknown members conservatively keep the channel occupied. Voice-state
+    // refreshes must remain cache-only to avoid bursts of per-user HTTP calls.
+    occupancy.is_occupied()
 }
 
 fn classify_cached_occupancy(
@@ -373,12 +358,13 @@ mod tests {
     }
 
     #[test]
-    fn unknown_members_are_returned_for_safe_lookup() {
+    fn unknown_members_are_treated_as_occupied_without_lookup() {
         let unknown_user = UserId::new(2);
         let occupancy =
             classify_cached_occupancy(CHANNEL, BOT, [(unknown_user, Some(CHANNEL), None)]);
 
         assert_eq!(occupancy.unknown_members, vec![unknown_user]);
+        assert!(occupancy.is_occupied());
     }
 
     #[test]

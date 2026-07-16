@@ -9,6 +9,8 @@ pub struct GuildMusicState {
     pub current: Option<Track>,
     /// Guild-specific pre-play URL. `None` means the feature is disabled.
     pub preplay_url: Option<String>,
+    /// Whether an inserted pre-play clip is currently ahead of the next music track.
+    pub preplay_active: bool,
 }
 
 impl GuildMusicState {
@@ -17,6 +19,7 @@ impl GuildMusicState {
             queue: VecDeque::new(),
             current: None,
             preplay_url: None,
+            preplay_active: false,
         }
     }
 
@@ -32,6 +35,7 @@ impl GuildMusicState {
         let mut tracks = tracks.into_iter();
 
         if was_idle {
+            self.preplay_active = false;
             self.current = tracks.next();
         }
 
@@ -40,15 +44,37 @@ impl GuildMusicState {
 
     /// Advance to the next track: returns it if the queue is non-empty.
     pub fn advance(&mut self) -> Option<Track> {
+        self.preplay_active = false;
         let next = self.queue.pop_front();
         self.current = next.clone();
         next
+    }
+
+    /// Mark the inserted pre-play clip as current without consuming the next song.
+    pub fn begin_preplay(&mut self) -> bool {
+        if self.queue.is_empty() {
+            return false;
+        }
+
+        self.current = None;
+        self.preplay_active = true;
+        true
+    }
+
+    /// Finish the active pre-play clip and promote the next song to current.
+    pub fn finish_preplay(&mut self) -> Option<Track> {
+        if !self.preplay_active {
+            return None;
+        }
+
+        self.advance()
     }
 
     /// Clear current track and queue (used by /leave).
     pub fn clear(&mut self) {
         self.current = None;
         self.queue.clear();
+        self.preplay_active = false;
     }
 
     /// Enable pre-play audio or replace the guild's current URL.
@@ -136,6 +162,7 @@ mod tests {
 
         assert!(state.current.is_none());
         assert!(state.queue.is_empty());
+        assert!(!state.preplay_active);
         assert_eq!(
             state.preplay_url.as_deref(),
             Some("https://youtu.be/preplay")
@@ -154,5 +181,45 @@ mod tests {
         assert!(state.disable_preplay());
         assert!(!state.disable_preplay());
         assert!(state.preplay_url.is_none());
+    }
+
+    #[test]
+    fn preplay_phase_keeps_next_music_queued_until_clip_ends() {
+        let mut state = GuildMusicState::new();
+        state.current = Some(track("current"));
+        state.enqueue(track("next"));
+
+        assert!(state.begin_preplay());
+        assert!(state.preplay_active);
+        assert!(state.current.is_none());
+        assert_eq!(
+            state.queue.front().map(|track| track.title.as_str()),
+            Some("next")
+        );
+
+        let next = state.finish_preplay();
+        assert!(!state.preplay_active);
+        assert_eq!(
+            next.as_ref().map(|track| track.title.as_str()),
+            Some("next")
+        );
+        assert_eq!(
+            state.current.as_ref().map(|track| track.title.as_str()),
+            Some("next")
+        );
+        assert!(state.queue.is_empty());
+    }
+
+    #[test]
+    fn preplay_cannot_start_without_an_upcoming_song() {
+        let mut state = GuildMusicState::new();
+        state.current = Some(track("current"));
+
+        assert!(!state.begin_preplay());
+        assert!(!state.preplay_active);
+        assert_eq!(
+            state.current.as_ref().map(|track| track.title.as_str()),
+            Some("current")
+        );
     }
 }

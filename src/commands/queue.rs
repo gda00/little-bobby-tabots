@@ -8,7 +8,7 @@ use serenity::{
     client::Context,
 };
 
-use crate::Data;
+use crate::{commands::guild_state::GuildMusicState, Data};
 
 /// /queue — show the current track and the upcoming queue.
 pub async fn run(
@@ -39,14 +39,40 @@ pub async fn run(
 
     let state = state_arc.read().await;
 
-    if state.current.is_none() && state.queue.is_empty() {
+    if !state.preplay_active && state.current.is_none() && state.queue.is_empty() {
         return reply_text(ctx, command, "📭 The queue is empty.", false).await;
     }
 
-    // Build the embed description
+    let description = build_queue_description(&state);
+
+    let embed = CreateEmbed::new()
+        .title("📋 Queue")
+        .description(description)
+        .colour(0x5865F2)
+        .footer(serenity::all::CreateEmbedFooter::new(format!(
+            "{} track(s) in queue",
+            state.queue.len()
+        )));
+
+    command
+        .create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .ephemeral(false),
+            ),
+        )
+        .await
+}
+
+fn build_queue_description(state: &GuildMusicState) -> String {
     let mut description = String::new();
 
-    if let Some(current) = &state.current {
+    if state.preplay_active {
+        description
+            .push_str("**🔊 Pre-play Audio**\nPlaying the configured between-track clip.\n\n");
+    } else if let Some(current) = &state.current {
         description.push_str(&format!(
             "**🎵 Now Playing**\n[{}]({})\nRequested by <@{}>\n\n",
             current.title, current.url, current.requested_by
@@ -73,25 +99,7 @@ pub async fn run(
         }
     }
 
-    let embed = CreateEmbed::new()
-        .title("📋 Queue")
-        .description(description)
-        .colour(0x5865F2)
-        .footer(serenity::all::CreateEmbedFooter::new(format!(
-            "{} track(s) in queue",
-            state.queue.len()
-        )));
-
-    command
-        .create_response(
-            &ctx.http,
-            CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new()
-                    .embed(embed)
-                    .ephemeral(false),
-            ),
-        )
-        .await
+    description
 }
 
 async fn reply_text(
@@ -110,4 +118,34 @@ async fn reply_text(
             ),
         )
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_queue_description;
+    use crate::commands::guild_state::{GuildMusicState, Track};
+    use serenity::all::UserId;
+
+    fn track(title: &str) -> Track {
+        Track {
+            title: title.to_string(),
+            url: format!("https://example.com/{title}"),
+            requested_by: UserId::new(1),
+        }
+    }
+
+    #[test]
+    fn queue_description_reports_active_preplay_before_next_music() {
+        let mut state = GuildMusicState::new();
+        state.current = Some(track("ended"));
+        state.enqueue(track("next"));
+        assert!(state.begin_preplay());
+
+        let description = build_queue_description(&state);
+
+        assert!(description.contains("Pre-play Audio"));
+        assert!(description.contains("[next](https://example.com/next)"));
+        assert!(!description.contains("Now Playing"));
+        assert!(!description.contains("[ended](https://example.com/ended)"));
+    }
 }

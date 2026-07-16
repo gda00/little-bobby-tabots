@@ -243,9 +243,14 @@ pub fn is_youtube_video_url(input: &str) -> bool {
 
     let path = url.path().trim_end_matches('/');
     if path == "/watch" {
-        return url
+        let has_video = url
             .query_pairs()
             .any(|(key, value)| key == "v" && !value.is_empty());
+        let has_playlist = url
+            .query_pairs()
+            .any(|(key, value)| key == "list" && !value.is_empty());
+
+        return has_video && !has_playlist;
     }
 
     ["/shorts/", "/live/", "/embed/"]
@@ -339,6 +344,9 @@ mod tests {
         ));
         assert!(!is_youtube_video_url(
             "https://www.youtube.com/playlist?list=PL123"
+        ));
+        assert!(!is_youtube_video_url(
+            "https://www.youtube.com/watch?v=abc123&list=PL123"
         ));
         assert!(!is_youtube_video_url("https://example.com/watch?v=abc123"));
         assert!(!is_youtube_video_url("not-a-url"));

@@ -30,6 +30,7 @@
 | `/pause` | Pauses playback of the current track. |
 | `/resume` | Resumes playing the paused track. |
 | `/skip` | Skips the current track and starts the next one in the queue. |
+| `/clear` | Clears all upcoming tracks without stopping the current track. |
 | `/queue` | Shows an embed list of the currently playing track and the upcoming playlist. |
 | `/preplay [url]` | Enables or updates between-track audio. Uses `PREPLAY_URL` when no URL is supplied. |
 | `/stop-preplay` | Disables future between-track audio for the server. |

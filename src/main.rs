@@ -84,6 +84,8 @@ impl EventHandler for Handler {
                     .required(true),
                 ),
             CreateCommand::new("skip").description("Skip the current song"),
+            CreateCommand::new("clear")
+                .description("Clear queued tracks without stopping the current song"),
             CreateCommand::new("leave").description("Stop playback and leave the voice channel"),
             CreateCommand::new("pause").description("Pause the currently playing song"),
             CreateCommand::new("resume").description("Resume paused playback"),
@@ -141,6 +143,7 @@ impl EventHandler for Handler {
             "ping" => commands::ping::run(&ctx, &command).await,
             "play" => commands::play::run(&ctx, &command, &data).await,
             "skip" => commands::skip::run(&ctx, &command, &data).await,
+            "clear" => commands::clear::run(&ctx, &command, &data).await,
             "leave" => commands::leave::run(&ctx, &command, &data).await,
             "pause" => commands::pause::run(&ctx, &command, &data).await,
             "resume" => commands::resume::run(&ctx, &command, &data).await,

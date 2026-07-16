@@ -1,3 +1,4 @@
+pub mod clear;
 pub mod guild_state;
 pub mod leave;
 pub mod pause;

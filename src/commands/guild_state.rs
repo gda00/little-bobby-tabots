@@ -77,6 +77,21 @@ impl GuildMusicState {
         self.preplay_active = false;
     }
 
+    /// Clear only upcoming tracks, preserving whatever is currently playing.
+    pub fn clear_queue(&mut self) -> usize {
+        let cleared = self.queue.len();
+        self.queue.clear();
+        cleared
+    }
+
+    /// Return whether an event belongs to the current music track.
+    pub fn is_current_playback(&self, playback_id: &str) -> bool {
+        self.current
+            .as_ref()
+            .and_then(|track| track.playback_id.as_deref())
+            == Some(playback_id)
+    }
+
     /// Enable pre-play audio or replace the guild's current URL.
     pub fn enable_preplay(&mut self, url: String) {
         self.preplay_url = Some(url);
@@ -95,6 +110,8 @@ pub struct Track {
     /// The resolved URL that yt-dlp will stream from.
     pub url: String,
     pub requested_by: UserId,
+    /// Songbird's unique ID for this playback instance.
+    pub playback_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -107,6 +124,7 @@ mod tests {
             title: title.to_string(),
             url: format!("https://example.com/{title}"),
             requested_by: UserId::new(1),
+            playback_id: None,
         }
     }
 
@@ -163,6 +181,34 @@ mod tests {
         assert!(state.current.is_none());
         assert!(state.queue.is_empty());
         assert!(!state.preplay_active);
+        assert_eq!(
+            state.preplay_url.as_deref(),
+            Some("https://youtu.be/preplay")
+        );
+    }
+
+    #[test]
+    fn clear_queue_preserves_current_track_and_preplay_setting() {
+        let mut state = GuildMusicState::new();
+        let mut current = track("current");
+        current.playback_id = Some("current-id".to_string());
+        let mut queued = track("one");
+        queued.playback_id = Some("queued-id".to_string());
+        state.current = Some(current);
+        state.enqueue(queued);
+        state.enqueue(track("two"));
+        state.enable_preplay("https://youtu.be/preplay".to_string());
+
+        let cleared = state.clear_queue();
+
+        assert_eq!(cleared, 2);
+        assert_eq!(
+            state.current.as_ref().map(|track| track.title.as_str()),
+            Some("current")
+        );
+        assert!(state.queue.is_empty());
+        assert!(state.is_current_playback("current-id"));
+        assert!(!state.is_current_playback("queued-id"));
         assert_eq!(
             state.preplay_url.as_deref(),
             Some("https://youtu.be/preplay")

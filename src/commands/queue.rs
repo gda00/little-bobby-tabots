@@ -131,6 +131,7 @@ mod tests {
             title: title.to_string(),
             url: format!("https://example.com/{title}"),
             requested_by: UserId::new(1),
+            playback_id: None,
         }
     }
 

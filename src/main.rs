@@ -1,9 +1,13 @@
 mod commands;
+mod voice_idle;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{atomic::AtomicU64, Arc},
+};
 
 use serenity::{
-    all::{Command, CreateCommand, GatewayIntents, Interaction, Ready},
+    all::{Command, CreateCommand, GatewayIntents, Interaction, Ready, VoiceState},
     async_trait,
     client::{Client, Context, EventHandler},
 };
@@ -13,6 +17,7 @@ use tracing::{error, info};
 use tracing_subscriber::{fmt, EnvFilter};
 
 use commands::guild_state::GuildMusicState;
+use commands::preplay::PrePlayConfig;
 
 /// Shared application data available to all command handlers.
 #[derive(Default)]
@@ -21,11 +26,20 @@ pub struct Data {
     pub music_states: RwLock<HashMap<u64, Arc<RwLock<GuildMusicState>>>>,
     /// Serializes playback mutations so Songbird and displayed queue state stay ordered.
     pub music_operation_locks: Mutex<HashMap<u64, Arc<Mutex<()>>>>,
+    /// One cancellable empty-channel timer per guild.
+    pub(crate) empty_channel_timers: Mutex<HashMap<u64, voice_idle::EmptyChannelTimer>>,
+    /// Monotonic identity used to prevent stale timers from disconnecting newer calls.
+    pub(crate) next_empty_channel_timer_generation: AtomicU64,
+    /// Process-wide pre-play defaults loaded from the environment.
+    pub preplay_config: PrePlayConfig,
 }
 
 impl Data {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(preplay_config: PrePlayConfig) -> Self {
+        Self {
+            preplay_config,
+            ..Self::default()
+        }
     }
 
     pub async fn music_state(&self, guild_id: u64) -> Arc<RwLock<GuildMusicState>> {
@@ -74,6 +88,18 @@ impl EventHandler for Handler {
             CreateCommand::new("pause").description("Pause the currently playing song"),
             CreateCommand::new("resume").description("Resume paused playback"),
             CreateCommand::new("queue").description("Show the current queue"),
+            CreateCommand::new("preplay")
+                .description("Enable or update probabilistic between-track audio")
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::String,
+                        "url",
+                        "YouTube video URL (defaults to PREPLAY_URL)",
+                    )
+                    .required(false),
+                ),
+            CreateCommand::new("stop-preplay")
+                .description("Disable probabilistic between-track audio"),
         ];
 
         if let Ok(guild_id_str) = std::env::var("GUILD_ID") {
@@ -119,6 +145,8 @@ impl EventHandler for Handler {
             "pause" => commands::pause::run(&ctx, &command, &data).await,
             "resume" => commands::resume::run(&ctx, &command, &data).await,
             "queue" => commands::queue::run(&ctx, &command, &data).await,
+            "preplay" => commands::preplay::run_enable(&ctx, &command, &data).await,
+            "stop-preplay" => commands::preplay::run_stop(&ctx, &command, &data).await,
             other => {
                 error!("Unknown command: {other}");
                 Ok(())
@@ -128,6 +156,23 @@ impl EventHandler for Handler {
         if let Err(e) = result {
             error!("Error handling command '{}': {e}", command.data.name);
         }
+    }
+
+    /// Start or cancel empty-channel timers whenever voice membership changes.
+    async fn voice_state_update(&self, ctx: Context, _old: Option<VoiceState>, new: VoiceState) {
+        let Some(guild_id) = new.guild_id else {
+            return;
+        };
+
+        let data = ctx
+            .data
+            .read()
+            .await
+            .get::<commands::DataKey>()
+            .cloned()
+            .expect("Data should always be present");
+
+        voice_idle::refresh(&ctx, &data, guild_id).await;
     }
 }
 
@@ -152,7 +197,9 @@ async fn main() {
     // for knowing which channel the user is in.
     let intents = GatewayIntents::non_privileged() | GatewayIntents::GUILD_VOICE_STATES;
 
-    let shared_data = Arc::new(Data::new());
+    let preplay_config = PrePlayConfig::from_env()
+        .unwrap_or_else(|error| panic!("Invalid pre-play configuration: {error}"));
+    let shared_data = Arc::new(Data::new(preplay_config));
 
     let mut client = Client::builder(&token, intents)
         .event_handler(Handler)

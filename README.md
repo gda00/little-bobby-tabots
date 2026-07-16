@@ -16,6 +16,8 @@
 *   **Discord Voice E2EE**: Built on `songbird 0.6.0` to support Discord's mandatory end-to-end voice encryption (DAVE protocol), eliminating websocket timeouts and disconnects.
 *   **Vulnerability-Free**: Uses `native-tls` (OpenSSL) backend to keep compile-time dependencies 100% free of security advisories. Fully audited via `cargo audit`.
 *   **Streamed Playback**: Downloads nothing to disk. Audio is piped directly from `yt-dlp` via `ffmpeg` to memory buffers, leaving zero temp file waste.
+*   **Automatic Voice Cleanup**: Stops playback, clears the queue, and disconnects after the voice channel has no human listeners for 10 minutes.
+*   **Probabilistic Pre-Play Audio**: Optionally inserts a configured YouTube clip between queued music tracks using a configurable percentage chance.
 *   **Slash Commands**: Supports full modern slash interaction registry with guild-level instant registration.
 
 ---
@@ -29,6 +31,8 @@
 | `/resume` | Resumes playing the paused track. |
 | `/skip` | Skips the current track and starts the next one in the queue. |
 | `/queue` | Shows an embed list of the currently playing track and the upcoming playlist. |
+| `/preplay [url]` | Enables or updates between-track audio. Uses `PREPLAY_URL` when no URL is supplied. |
+| `/stop-preplay` | Disables future between-track audio for the server. |
 | `/leave` | Stops playback, clears the queue, and disconnects the bot from the voice channel. |
 | `/ping` | A diagnostics command to confirm the bot is active and responsive. |
 
@@ -49,9 +53,12 @@ Create a `.env` file in the project root:
 ```env
 DISCORD_TOKEN=your_copied_discord_bot_token_here
 GUILD_ID=your_test_server_id_here
+PREPLAY_URL=https://www.youtube.com/watch?v=your_video_id
+PREPLAY_CHANCE_PERCENT=75
 ```
 > [!NOTE]
 > Setting `GUILD_ID` registers slash commands instantly in your test server on bot startup. Without it, commands are registered globally and can take up to an hour to populate.
+> `PREPLAY_URL` is optional when a URL is supplied directly to `/preplay`. `PREPLAY_CHANCE_PERCENT` is optional and defaults to `75`; valid values are `0` through `100`.
 
 ---
 

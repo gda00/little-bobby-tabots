@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use serenity::{
-    all::{
-        CommandInteraction, CreateInteractionResponse, CreateInteractionResponseMessage,
-    },
+    all::{CommandInteraction, CreateInteractionResponse, CreateInteractionResponseMessage},
     client::Context,
 };
 
@@ -18,7 +16,13 @@ pub async fn run(
     let guild_id = match command.guild_id {
         Some(id) => id,
         None => {
-            return reply(ctx, command, "❌ This command can only be used in a server.", true).await;
+            return reply(
+                ctx,
+                command,
+                "❌ This command can only be used in a server.",
+                true,
+            )
+            .await;
         }
     };
 
@@ -35,7 +39,10 @@ pub async fn run(
             let queue = handler.queue();
 
             if queue.is_empty() {
-                ("❌ There is nothing playing in the queue.".to_string(), true)
+                (
+                    "❌ There is nothing playing in the queue.".to_string(),
+                    true,
+                )
             } else {
                 match queue.resume() {
                     Ok(_) => ("▶️ Playback resumed.".to_string(), false),
@@ -43,7 +50,10 @@ pub async fn run(
                 }
             }
         } else {
-            ("❌ The bot is not currently in a voice channel.".to_string(), true)
+            (
+                "❌ The bot is not currently in a voice channel.".to_string(),
+                true,
+            )
         }
     };
 

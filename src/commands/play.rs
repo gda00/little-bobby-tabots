@@ -1,5 +1,6 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
+use rand::Rng;
 use serenity::{
     all::{
         CommandInteraction, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
@@ -8,13 +9,14 @@ use serenity::{
     client::Context,
 };
 use songbird::{
-    events::{Event, EventContext, EventHandler as SongbirdEventHandler, TrackEvent},
+    events::{Event, EventContext, EventData, EventHandler as SongbirdEventHandler, TrackEvent},
     input::{Compose, YoutubeDl},
+    tracks::Track as SongbirdTrack,
 };
 use tracing::{error, info};
 
 use crate::{
-    commands::{guild_state::Track, youtube_playlist},
+    commands::{guild_state::Track, preplay, youtube_playlist},
     Data,
 };
 
@@ -103,16 +105,19 @@ pub async fn run(
 
         for track in &request.tracks {
             let source = YoutubeDl::new(client.clone(), track.url.clone());
-            let track_handle = handler.enqueue(source.into()).await;
-            if let Err(error) = track_handle.add_event(
-                Event::Track(TrackEvent::End),
-                TrackEndHandler {
-                    guild_id: guild_id.get(),
-                    data: Arc::clone(data),
-                },
-            ) {
-                error!("Failed to register track end handler: {error}");
-            }
+            let mut songbird_track = SongbirdTrack::new(source.into());
+            songbird_track.events.add_event(
+                EventData::new(
+                    Event::Track(TrackEvent::End),
+                    MusicTrackEndHandler {
+                        guild_id: guild_id.get(),
+                        data: Arc::clone(data),
+                        songbird: Arc::clone(&songbird),
+                    },
+                ),
+                Duration::ZERO,
+            );
+            handler.enqueue(songbird_track).await;
         }
 
         was_idle
@@ -318,13 +323,14 @@ async fn edit_reply_embed(
         .map(|_| ())
 }
 
-struct TrackEndHandler {
+struct MusicTrackEndHandler {
     guild_id: u64,
     data: Arc<Data>,
+    songbird: Arc<songbird::Songbird>,
 }
 
 #[serenity::async_trait]
-impl SongbirdEventHandler for TrackEndHandler {
+impl SongbirdEventHandler for MusicTrackEndHandler {
     async fn act(&self, _ctx: &EventContext<'_>) -> Option<Event> {
         let operation_lock = self.data.music_operation_lock(self.guild_id).await;
         let _operation_guard = operation_lock.lock().await;
@@ -333,11 +339,85 @@ impl SongbirdEventHandler for TrackEndHandler {
             states.get(&self.guild_id).cloned()
         };
 
-        if let Some(state_arc) = state_arc {
+        if let Some(state_arc) = &state_arc {
+            let (preplay_url, has_next_music) = {
+                let state = state_arc.read().await;
+                (state.preplay_url.clone(), !state.queue.is_empty())
+            };
+            let roll = rand::rng().random_range(0..100);
+
+            if let Some(preplay_url) = preplay_url {
+                if has_next_music {
+                    let guild_id = serenity::all::GuildId::new(self.guild_id);
+
+                    if let Some(handler_lock) = self.songbird.get(guild_id) {
+                        let mut handler = handler_lock.lock().await;
+                        let songbird_has_next = handler.queue().len() > 1;
+
+                        if preplay::transition_should_insert(
+                            true,
+                            has_next_music,
+                            songbird_has_next,
+                            self.data.preplay_config.chance_percent,
+                            roll,
+                        ) {
+                            let source =
+                                YoutubeDl::new(reqwest::Client::new(), preplay_url.clone());
+                            let mut preplay_track = SongbirdTrack::new(source.into());
+                            preplay_track.events.add_event(
+                                EventData::new(
+                                    Event::Track(TrackEvent::Error),
+                                    PrePlayErrorHandler {
+                                        guild_id: self.guild_id,
+                                    },
+                                ),
+                                Duration::ZERO,
+                            );
+                            let preplay_handle = handler.enqueue_with_preload(preplay_track, None);
+                            let preplay_id = preplay_handle.uuid();
+                            let inserted = handler.queue().modify_queue(|queue| {
+                                preplay::move_matching_to_next(queue, |track| {
+                                    track.uuid() == preplay_id
+                                })
+                            });
+
+                            if inserted {
+                                info!(
+                                    guild_id = self.guild_id,
+                                    chance_percent = self.data.preplay_config.chance_percent,
+                                    "Inserted pre-play audio before next music track"
+                                );
+                            } else {
+                                error!(
+                                    guild_id = self.guild_id,
+                                    "Could not position pre-play audio in Songbird queue"
+                                );
+                                drop(preplay_handle.stop());
+                            }
+                        }
+                    }
+                }
+            }
+
             let mut state = state_arc.write().await;
             state.advance();
         }
 
+        Some(Event::Cancel)
+    }
+}
+
+struct PrePlayErrorHandler {
+    guild_id: u64,
+}
+
+#[serenity::async_trait]
+impl SongbirdEventHandler for PrePlayErrorHandler {
+    async fn act(&self, _ctx: &EventContext<'_>) -> Option<Event> {
+        error!(
+            guild_id = self.guild_id,
+            "Pre-play audio encountered a playback source error"
+        );
         Some(Event::Cancel)
     }
 }

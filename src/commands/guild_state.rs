@@ -7,6 +7,8 @@ use serenity::model::id::UserId;
 pub struct GuildMusicState {
     pub queue: VecDeque<Track>,
     pub current: Option<Track>,
+    /// Guild-specific pre-play URL. `None` means the feature is disabled.
+    pub preplay_url: Option<String>,
 }
 
 impl GuildMusicState {
@@ -14,6 +16,7 @@ impl GuildMusicState {
         Self {
             queue: VecDeque::new(),
             current: None,
+            preplay_url: None,
         }
     }
 
@@ -46,6 +49,16 @@ impl GuildMusicState {
     pub fn clear(&mut self) {
         self.current = None;
         self.queue.clear();
+    }
+
+    /// Enable pre-play audio or replace the guild's current URL.
+    pub fn enable_preplay(&mut self, url: String) {
+        self.preplay_url = Some(url);
+    }
+
+    /// Disable future pre-play audio without changing music playback state.
+    pub fn disable_preplay(&mut self) -> bool {
+        self.preplay_url.take().is_some()
     }
 }
 
@@ -117,10 +130,29 @@ mod tests {
         let mut state = GuildMusicState::new();
         state.current = Some(track("current"));
         state.enqueue(track("queued"));
+        state.enable_preplay("https://youtu.be/preplay".to_string());
 
         state.clear();
 
         assert!(state.current.is_none());
         assert!(state.queue.is_empty());
+        assert_eq!(
+            state.preplay_url.as_deref(),
+            Some("https://youtu.be/preplay")
+        );
+    }
+
+    #[test]
+    fn preplay_can_be_enabled_replaced_and_disabled() {
+        let mut state = GuildMusicState::new();
+        assert!(state.preplay_url.is_none());
+
+        state.enable_preplay("https://youtu.be/one".to_string());
+        state.enable_preplay("https://youtu.be/two".to_string());
+        assert_eq!(state.preplay_url.as_deref(), Some("https://youtu.be/two"));
+
+        assert!(state.disable_preplay());
+        assert!(!state.disable_preplay());
+        assert!(state.preplay_url.is_none());
     }
 }

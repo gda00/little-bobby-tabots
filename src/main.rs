@@ -17,6 +17,7 @@ use tracing::{error, info};
 use tracing_subscriber::{fmt, EnvFilter};
 
 use commands::guild_state::GuildMusicState;
+use commands::preplay::PrePlayConfig;
 
 /// Shared application data available to all command handlers.
 #[derive(Default)]
@@ -29,11 +30,16 @@ pub struct Data {
     pub(crate) empty_channel_timers: Mutex<HashMap<u64, voice_idle::EmptyChannelTimer>>,
     /// Monotonic identity used to prevent stale timers from disconnecting newer calls.
     pub(crate) next_empty_channel_timer_generation: AtomicU64,
+    /// Process-wide pre-play defaults loaded from the environment.
+    pub preplay_config: PrePlayConfig,
 }
 
 impl Data {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(preplay_config: PrePlayConfig) -> Self {
+        Self {
+            preplay_config,
+            ..Self::default()
+        }
     }
 
     pub async fn music_state(&self, guild_id: u64) -> Arc<RwLock<GuildMusicState>> {
@@ -82,6 +88,18 @@ impl EventHandler for Handler {
             CreateCommand::new("pause").description("Pause the currently playing song"),
             CreateCommand::new("resume").description("Resume paused playback"),
             CreateCommand::new("queue").description("Show the current queue"),
+            CreateCommand::new("preplay")
+                .description("Enable or update probabilistic between-track audio")
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::String,
+                        "url",
+                        "YouTube video URL (defaults to PREPLAY_URL)",
+                    )
+                    .required(false),
+                ),
+            CreateCommand::new("stop-preplay")
+                .description("Disable probabilistic between-track audio"),
         ];
 
         if let Ok(guild_id_str) = std::env::var("GUILD_ID") {
@@ -127,6 +145,8 @@ impl EventHandler for Handler {
             "pause" => commands::pause::run(&ctx, &command, &data).await,
             "resume" => commands::resume::run(&ctx, &command, &data).await,
             "queue" => commands::queue::run(&ctx, &command, &data).await,
+            "preplay" => commands::preplay::run_enable(&ctx, &command, &data).await,
+            "stop-preplay" => commands::preplay::run_stop(&ctx, &command, &data).await,
             other => {
                 error!("Unknown command: {other}");
                 Ok(())
@@ -177,7 +197,9 @@ async fn main() {
     // for knowing which channel the user is in.
     let intents = GatewayIntents::non_privileged() | GatewayIntents::GUILD_VOICE_STATES;
 
-    let shared_data = Arc::new(Data::new());
+    let preplay_config = PrePlayConfig::from_env()
+        .unwrap_or_else(|error| panic!("Invalid pre-play configuration: {error}"));
+    let shared_data = Arc::new(Data::new(preplay_config));
 
     let mut client = Client::builder(&token, intents)
         .event_handler(Handler)

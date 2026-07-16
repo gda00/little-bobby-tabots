@@ -111,4 +111,16 @@ mod tests {
             vec!["existing", "one", "two"]
         );
     }
+
+    #[test]
+    fn clear_removes_current_and_queued_tracks() {
+        let mut state = GuildMusicState::new();
+        state.current = Some(track("current"));
+        state.enqueue(track("queued"));
+
+        state.clear();
+
+        assert!(state.current.is_none());
+        assert!(state.queue.is_empty());
+    }
 }

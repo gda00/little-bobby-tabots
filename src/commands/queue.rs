@@ -19,8 +19,13 @@ pub async fn run(
     let guild_id = match command.guild_id {
         Some(id) => id,
         None => {
-            return reply_text(ctx, command, "❌ This command can only be used in a server.", true)
-                .await;
+            return reply_text(
+                ctx,
+                command,
+                "❌ This command can only be used in a server.",
+                true,
+            )
+            .await;
         }
     };
 

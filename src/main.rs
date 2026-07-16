@@ -1,9 +1,13 @@
 mod commands;
+mod voice_idle;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{atomic::AtomicU64, Arc},
+};
 
 use serenity::{
-    all::{Command, CreateCommand, GatewayIntents, Interaction, Ready},
+    all::{Command, CreateCommand, GatewayIntents, Interaction, Ready, VoiceState},
     async_trait,
     client::{Client, Context, EventHandler},
 };
@@ -21,6 +25,10 @@ pub struct Data {
     pub music_states: RwLock<HashMap<u64, Arc<RwLock<GuildMusicState>>>>,
     /// Serializes playback mutations so Songbird and displayed queue state stay ordered.
     pub music_operation_locks: Mutex<HashMap<u64, Arc<Mutex<()>>>>,
+    /// One cancellable empty-channel timer per guild.
+    pub(crate) empty_channel_timers: Mutex<HashMap<u64, voice_idle::EmptyChannelTimer>>,
+    /// Monotonic identity used to prevent stale timers from disconnecting newer calls.
+    pub(crate) next_empty_channel_timer_generation: AtomicU64,
 }
 
 impl Data {
@@ -128,6 +136,23 @@ impl EventHandler for Handler {
         if let Err(e) = result {
             error!("Error handling command '{}': {e}", command.data.name);
         }
+    }
+
+    /// Start or cancel empty-channel timers whenever voice membership changes.
+    async fn voice_state_update(&self, ctx: Context, _old: Option<VoiceState>, new: VoiceState) {
+        let Some(guild_id) = new.guild_id else {
+            return;
+        };
+
+        let data = ctx
+            .data
+            .read()
+            .await
+            .get::<commands::DataKey>()
+            .cloned()
+            .expect("Data should always be present");
+
+        voice_idle::refresh(&ctx, &data, guild_id).await;
     }
 }
 

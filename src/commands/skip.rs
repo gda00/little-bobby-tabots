@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use serenity::{
-    all::{
-        CommandInteraction, CreateInteractionResponse, CreateInteractionResponseMessage,
-    },
+    all::{CommandInteraction, CreateInteractionResponse, CreateInteractionResponseMessage},
     client::Context,
 };
 use tracing::error;
@@ -19,7 +17,13 @@ pub async fn run(
     let guild_id = match command.guild_id {
         Some(id) => id,
         None => {
-            return reply(ctx, command, "❌ This command can only be used in a server.", true).await;
+            return reply(
+                ctx,
+                command,
+                "❌ This command can only be used in a server.",
+                true,
+            )
+            .await;
         }
     };
 
@@ -36,7 +40,10 @@ pub async fn run(
             let handler = handler_lock.lock().await;
             let queue = handler.queue();
             if queue.is_empty() {
-                ("⏭️ There's nothing in the queue to skip to.".to_string(), false)
+                (
+                    "⏭️ There's nothing in the queue to skip to.".to_string(),
+                    false,
+                )
             } else if let Err(e) = queue.skip() {
                 error!("Skip failed: {e}");
                 ("❌ Failed to skip the current track.".to_string(), true)

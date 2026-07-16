@@ -16,6 +16,7 @@
 *   **Discord Voice E2EE**: Built on `songbird 0.6.0` to support Discord's mandatory end-to-end voice encryption (DAVE protocol), eliminating websocket timeouts and disconnects.
 *   **Vulnerability-Free**: Uses `native-tls` (OpenSSL) backend to keep compile-time dependencies 100% free of security advisories. Fully audited via `cargo audit`.
 *   **Streamed Playback**: Downloads nothing to disk. Audio is piped directly from `yt-dlp` via `ffmpeg` to memory buffers, leaving zero temp file waste.
+*   **Automatic Voice Cleanup**: Stops playback, clears the queue, and disconnects after the voice channel has no human listeners for 10 minutes.
 *   **Slash Commands**: Supports full modern slash interaction registry with guild-level instant registration.
 
 ---

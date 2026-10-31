@@ -23,11 +23,22 @@ use crate::{
 };
 
 #[derive(Clone)]
-struct WebState {
+pub(crate) struct WebState {
     data: Arc<Data>,
     songbird: Arc<Songbird>,
     guild_id: Option<GuildId>,
     voice_channel_id: Option<ChannelId>,
+}
+
+impl WebState {
+    pub(crate) fn from_env(data: Arc<Data>, songbird: Arc<Songbird>) -> Self {
+        Self {
+            data,
+            songbird,
+            guild_id: env_id("GUILD_ID").map(GuildId::new),
+            voice_channel_id: env_id("VOICE_CHANNEL_ID").map(ChannelId::new),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -83,12 +94,17 @@ struct ErrorResponse {
     error: String,
 }
 
-struct ApiError {
+pub(crate) struct ApiError {
     status: StatusCode,
     message: String,
 }
 
 impl ApiError {
+    /// The user-facing text, for callers outside HTTP.
+    pub(crate) fn into_message(self) -> String {
+        self.message
+    }
+
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -130,10 +146,7 @@ impl IntoResponse for ApiError {
     }
 }
 
-pub async fn serve(
-    data: Arc<Data>,
-    songbird: Arc<Songbird>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn serve(state: WebState) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bind_address = std::env::var("WEB_BIND")
         .unwrap_or_else(|_| "0.0.0.0:3000".to_string())
         .parse::<SocketAddr>()?;
@@ -147,13 +160,6 @@ pub async fn serve(
             "Dashboard files are missing; build the Preact app or set DASHBOARD_DIR"
         );
     }
-
-    let state = WebState {
-        data,
-        songbird,
-        guild_id: env_id("GUILD_ID").map(GuildId::new),
-        voice_channel_id: env_id("VOICE_CHANNEL_ID").map(ChannelId::new),
-    };
 
     let static_files = ServeDir::new(&static_dir).fallback(ServeFile::new(index_file));
     let app = Router::new()
@@ -225,7 +231,14 @@ async fn add_track(
     State(app): State<WebState>,
     Json(payload): Json<AddTrackRequest>,
 ) -> Result<(StatusCode, Json<MutationResponse>), ApiError> {
-    let query = payload.query.trim();
+    let message = queue_query(&app, &payload.query).await?;
+    Ok((StatusCode::CREATED, Json(MutationResponse { message })))
+}
+
+/// Resolve one song search, direct URL or YouTube playlist and queue it in the configured guild,
+/// joining voice when needed. Shared by the dashboard and the webhook relay.
+pub(crate) async fn queue_query(app: &WebState, query: &str) -> Result<String, ApiError> {
+    let query = query.trim();
     if query.is_empty() {
         return Err(ApiError::bad_request("Enter a song name or URL."));
     }
@@ -235,7 +248,7 @@ async fn add_track(
         ));
     }
 
-    let guild_id = configured_guild(&app)?;
+    let guild_id = configured_guild(app)?;
 
     // Resolve network metadata before taking the per-guild mutation lock.
     let request = play::resolve_request(query, None)
@@ -244,7 +257,7 @@ async fn add_track(
 
     let operation_lock = app.data.music_operation_lock(guild_id.get()).await;
     let _operation_guard = operation_lock.lock().await;
-    let handler_lock = connected_or_join(&app, guild_id).await?;
+    let handler_lock = connected_or_join(app, guild_id).await?;
 
     let added_count = request.tracks.len();
     let first_title = request
@@ -267,7 +280,7 @@ async fn add_track(
         None => format!("Added {first_title} to the queue."),
     };
 
-    Ok((StatusCode::CREATED, Json(MutationResponse { message })))
+    Ok(message)
 }
 
 async fn get_playlists(
@@ -455,7 +468,14 @@ async fn playback_action(
     State(app): State<WebState>,
     Path(action): Path<String>,
 ) -> Result<Json<MutationResponse>, ApiError> {
-    let guild_id = configured_guild(&app)?;
+    let message = playback(&app, &action).await?;
+    Ok(Json(MutationResponse { message }))
+}
+
+/// Pause, resume or skip the configured guild's playback. Shared by the dashboard and the
+/// webhook relay.
+pub(crate) async fn playback(app: &WebState, action: &str) -> Result<String, ApiError> {
+    let guild_id = configured_guild(app)?;
     let operation_lock = app.data.music_operation_lock(guild_id.get()).await;
     let _operation_guard = operation_lock.lock().await;
     let handler_lock = app
@@ -469,7 +489,7 @@ async fn playback_action(
         return Err(ApiError::conflict("There is nothing playing."));
     }
 
-    let message = match action.as_str() {
+    let message = match action {
         "pause" => {
             queue
                 .pause()
@@ -491,9 +511,7 @@ async fn playback_action(
         _ => return Err(ApiError::not_found("Unknown playback action.")),
     };
 
-    Ok(Json(MutationResponse {
-        message: message.to_string(),
-    }))
+    Ok(message.to_string())
 }
 
 async fn connected_or_join(
@@ -597,12 +615,12 @@ fn track_response(track: &Track, fallback_index: usize) -> TrackResponse {
     }
 }
 
-fn env_id(name: &str) -> Option<u64> {
+pub(crate) fn env_id(name: &str) -> Option<u64> {
     let value = std::env::var(name).ok()?;
     match value.trim().parse::<u64>() {
         Ok(id) if id > 0 => Some(id),
         _ => {
-            warn!("{name} is not a valid Discord ID; dashboard controls are disabled");
+            warn!("{name} is not a valid Discord ID; ignoring it");
             None
         }
     }

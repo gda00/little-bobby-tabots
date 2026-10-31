@@ -2,6 +2,7 @@ mod commands;
 mod playlists;
 mod voice_idle;
 mod web;
+mod webhook_relay;
 
 use std::{
     collections::HashMap,
@@ -9,11 +10,11 @@ use std::{
 };
 
 use serenity::{
-    all::{Command, CreateCommand, GatewayIntents, Interaction, Ready, VoiceState},
+    all::{Command, CreateCommand, GatewayIntents, Interaction, Message, Ready, VoiceState},
     async_trait,
     client::{Client, Context, EventHandler},
 };
-use songbird::SerenityInit;
+use songbird::{SerenityInit, Songbird};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -66,7 +67,10 @@ impl Data {
 }
 
 /// The main event handler for the bot.
-struct Handler;
+struct Handler {
+    /// Song requests posted by a trusted webhook, when `RELAY_WEBHOOK_ID` is set.
+    relay: Option<webhook_relay::Relay>,
+}
 
 #[async_trait]
 impl EventHandler for Handler {
@@ -188,6 +192,13 @@ impl EventHandler for Handler {
         }
     }
 
+    /// Hand webhook-posted song requests to the relay.
+    async fn message(&self, ctx: Context, msg: Message) {
+        if let Some(relay) = &self.relay {
+            relay.handle(&ctx, &msg).await;
+        }
+    }
+
     /// Start or cancel empty-channel timers whenever voice membership changes.
     async fn voice_state_update(&self, ctx: Context, _old: Option<VoiceState>, new: VoiceState) {
         let Some(guild_id) = new.guild_id else {
@@ -225,31 +236,33 @@ async fn main() {
 
     // Minimal intents: guild messages for voice state lookups, guild voice states
     // for knowing which channel the user is in.
-    let intents = GatewayIntents::non_privileged() | GatewayIntents::GUILD_VOICE_STATES;
+    let mut intents = GatewayIntents::non_privileged() | GatewayIntents::GUILD_VOICE_STATES;
 
     let preplay_config = PrePlayConfig::from_env()
         .unwrap_or_else(|error| panic!("Invalid pre-play configuration: {error}"));
     let shared_data = Arc::new(Data::new(preplay_config, PlaylistLibrary::from_env()));
 
+    // One Songbird shared by Discord commands, the dashboard and the webhook relay.
+    let songbird = Songbird::serenity();
+    let web_state = web::WebState::from_env(Arc::clone(&shared_data), Arc::clone(&songbird));
+    let relay = webhook_relay::Relay::from_env(web_state.clone());
+    if relay.is_some() {
+        // Reading webhook text is privileged: enable Message Content in the Developer Portal.
+        intents |= GatewayIntents::MESSAGE_CONTENT;
+        info!("Webhook relay enabled");
+    }
+
     let mut client = Client::builder(&token, intents)
-        .event_handler(Handler)
-        .register_songbird()
+        .event_handler(Handler { relay })
+        .register_songbird_with(songbird)
         .type_map_insert::<commands::DataKey>(Arc::clone(&shared_data))
         .await
         .expect("Failed to create serenity client");
 
     info!("Starting Bobby TaBot…");
 
-    let songbird = {
-        let client_data = client.data.read().await;
-        client_data
-            .get::<songbird::serenity::SongbirdKey>()
-            .cloned()
-            .expect("Songbird must be registered")
-    };
-    let web_data = Arc::clone(&shared_data);
     tokio::spawn(async move {
-        if let Err(error) = web::serve(web_data, songbird).await {
+        if let Err(error) = web::serve(web_state).await {
             error!("Dashboard server stopped: {error}");
         }
     });

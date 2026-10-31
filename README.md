@@ -83,6 +83,22 @@ Massive Attack Teardrop
 
 The dashboard refreshes its playlist selector automatically and queues the selected file using the same rules as `/playlist`.
 
+### Webhook song requests
+
+Another service, such as a Minecraft server's chat bridge, can request songs without network access
+to the dashboard by posting through a Discord webhook:
+
+1. In the channel the requests should appear in, open **Edit Channel → Integrations → Webhooks**,
+   create a webhook and copy its URL. Give the URL only to the service that will post requests.
+2. Set `RELAY_WEBHOOK_ID` to the number in that URL
+   (`https://discord.com/api/webhooks/<RELAY_WEBHOOK_ID>/<token>`).
+3. Enable **Message Content Intent** under **Privileged Gateway Intents** in the Developer Portal.
+   With `RELAY_WEBHOOK_ID` set and this intent off, Discord refuses the bot's login.
+
+Messages from that webhook are run like dashboard actions and answered in the same channel:
+`!play <song name or URL>`, `!pause`, `!resume` and `!skip`. Messages from people and other
+webhooks are ignored.
+
 ---
 
 ## 🐳 Running with Docker Compose (Recommended)

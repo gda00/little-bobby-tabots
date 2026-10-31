@@ -36,18 +36,25 @@ RUN cargo build --release
 # Runtime Stage
 FROM alpine:latest
 
-# Install python3 and ffmpeg
-RUN apk add --no-cache ffmpeg python3 curl
+# Install python3, ffmpeg, curl, and deno (JS runtime for yt-dlp)
+RUN apk add --no-cache ffmpeg python3 curl deno
 
 # Install uv and use it to install the latest yt-dlp securely
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
-    /root/.local/bin/uv tool install yt-dlp
+    /root/.local/bin/uv tool install -U yt-dlp
 
 ENV PATH="/root/.local/bin:${PATH}"
+
+# Configure yt-dlp to automatically fetch JavaScript challenge solvers for YouTube
+RUN mkdir -p /etc && echo "--remote-components ejs:github" > /etc/yt-dlp.conf
 
 # Copy the compiled static binary from the builder stage
 COPY --from=builder /usr/src/little-bobby-tabots/target/release/little-bobby-tabots /usr/local/bin/little-bobby-tabots
 COPY --from=web-builder /usr/src/little-bobby-tabots/web/dist /opt/little-bobby-tabots/web
+
+# Copy entrypoint script to automatically keep yt-dlp updated on start
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Set runtime env defaults
 ENV GUILD_ID=""
@@ -58,4 +65,6 @@ ENV PLAYLISTS_DIR="/playlists"
 
 EXPOSE 3000
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["little-bobby-tabots"]
+
